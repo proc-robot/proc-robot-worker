@@ -118,6 +118,9 @@ All environment variables are validated in `src/config.ts`; `.env` is read only 
 
 ## Deploying (Railway, TASKS.md T0.6.7)
 
+Creating the Railway project and every value it needs is described step by step in
+`../SETUP_ACCOUNT.md` (§3 for the database role and connection string, §7 for Railway).
+
 - One service per environment (dev, staging, prod) in US East, built from this repo's `Dockerfile`.
   Config as code in `railway.json`: health check on `/health`, restart on failure.
 - The image is Node 22 on Debian with LibreOffice headless (no GUI) and Liberation fonts (metric
@@ -144,6 +147,12 @@ All environment variables are validated in `src/config.ts`; `.env` is read only 
 | `src/handlers/` | One file per queue; `ping` is the end-to-end check (T0.6.8) |
 
 ## Git
+
+**CI** (`.github/workflows/ci.yml`) runs on every pull request and on `main`:
+- `checks`: typecheck, format, build.
+- `integration`: the tests on a local Supabase stack built from `proc-robot-web`'s migrations. This
+  needs the `REPOS_READ_TOKEN` secret (`../SETUP_ACCOUNT.md` §2) and is skipped without it.
+- `docker`: builds the production image and runs `soffice --version` in it.
 
 Same convention as `../proc-robot-web`: branches `phase-<n>/<title>` (e.g. `phase-0/worker-skeleton`),
 and commit subjects that start with the TASKS.md ids they complete (`T0.6.1–T0.6.8: Worker skeleton`).
