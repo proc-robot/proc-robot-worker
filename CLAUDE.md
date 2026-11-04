@@ -150,8 +150,12 @@ Creating the Railway project and every value it needs is described step by step 
 
 **CI** (`.github/workflows/ci.yml`) runs on every pull request and on `main`:
 - `checks`: typecheck, format, build.
-- `integration`: the tests on a local Supabase stack built from `proc-robot-web`'s migrations. This
+- `integration`: the tests on a local Supabase stack built from `proc-robot-web`'s migrations. It
+  takes the web repo's branch with **the same name** if there is one, otherwise its `main`. This
   needs the `REPOS_READ_TOKEN` secret (`../SETUP_ACCOUNT.md` §2) and is skipped without it.
+
+**A change that spans both repos** (e.g. a new queue and RPC in the web repo, its handler here) uses
+the same branch name in both repos, so each repo's CI tests the pair.
 - `docker`: builds the production image and runs `soffice --version` in it.
 
 Same convention as `../proc-robot-web`: branches `phase-<n>/<title>` (e.g. `phase-0/worker-skeleton`),

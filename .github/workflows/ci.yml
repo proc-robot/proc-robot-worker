@@ -1,7 +1,8 @@
 # CI for proc-robot-worker (TASKS.md T0.7.1). Three jobs:
 # - checks:      typecheck, format, build
 # - integration: the runner tests against a local Supabase stack built from
-#                the web repo's migrations (needs REPOS_READ_TOKEN to check out
+#                the web repo's migrations: its branch with the same name if
+#                there is one, else its main (needs REPOS_READ_TOKEN to check out
 #                proc-robot-web, SETUP_ACCOUNT.md §2; skipped without it)
 # - docker:      builds the production image and checks LibreOffice runs in it
 name: CI
@@ -57,31 +58,60 @@ jobs:
         if: env.REPOS_READ_TOKEN != ''
         with:
           path: proc-robot-worker
+      # A change that spans both repos uses the same branch name in each, so CI
+      # tests the pair; otherwise the web repo's main.
+      - name: Pick the web branch
+        id: web-ref
+        if: env.REPOS_READ_TOKEN != ''
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          REPO: ${{ github.repository_owner }}/proc-robot-web
+        run: |
+          url="https://x-access-token:${REPOS_READ_TOKEN}@github.com/${REPO}.git"
+          if git ls-remote --exit-code --heads "$url" "refs/heads/$BRANCH" > /dev/null; then
+            ref="$BRANCH"
+          else
+            ref=main
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "::notice::Web repo checked out from its '$ref' branch."
       - name: Check out the web repo (database migrations)
         if: env.REPOS_READ_TOKEN != ''
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/proc-robot-web
           token: ${{ env.REPOS_READ_TOKEN }}
+          ref: ${{ steps.web-ref.outputs.ref }}
           path: proc-robot-web
+      - name: The web repo has the database
+        id: web
+        if: env.REPOS_READ_TOKEN != ''
+        env:
+          WEB_REF: ${{ steps.web-ref.outputs.ref }}
+        run: |
+          if [ -f proc-robot-web/supabase/config.toml ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The web repo's '$WEB_REF' branch has no supabase/ yet; skipping the integration tests."
+          fi
 
       - uses: actions/setup-node@v5
-        if: env.REPOS_READ_TOKEN != ''
+        if: steps.web.outputs.ready == 'true'
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: proc-robot-worker/package-lock.json
       - uses: supabase/setup-cli@v1
-        if: env.REPOS_READ_TOKEN != ''
+        if: steps.web.outputs.ready == 'true'
         with:
           version: ${{ env.SUPABASE_CLI_VERSION }}
 
       - name: Start Supabase (the web repo's migrations and seed)
-        if: env.REPOS_READ_TOKEN != ''
+        if: steps.web.outputs.ready == 'true'
         run: supabase start -x "$SUPABASE_EXCLUDE"
         working-directory: proc-robot-web
       - name: Integration tests
-        if: env.REPOS_READ_TOKEN != ''
+        if: steps.web.outputs.ready == 'true'
         run: npm ci && npm test
         working-directory: proc-robot-worker
 
