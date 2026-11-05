@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { RunnerStatus } from "./runner.js";
 
 /**
- * GET /health for Railway's health check and uptime monitoring (T0.7.5):
+ * GET /health for Railway's health check and uptime monitoring (Phase 4, T4.1.3):
  * 200 while the queue loop keeps polling, 503 when it has stalled or the
  * worker is shutting down. Nothing else is served.
  */

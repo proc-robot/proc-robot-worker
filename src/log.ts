@@ -1,5 +1,5 @@
 /**
- * JSON lines on stdout: Railway and Better Stack (T0.7.5) parse them as
+ * JSON lines on stdout: Railway (and Better Stack from Phase 4, T4.1.3) parse them as
  * structured logs. Never log payloads or secrets — job ids and orgs only.
  */
 type Level = "debug" | "info" | "warn" | "error";
