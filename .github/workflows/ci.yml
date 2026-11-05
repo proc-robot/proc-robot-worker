@@ -1,0 +1,137 @@
+# CI for proc-robot-worker (TASKS.md T0.7.1). Three jobs:
+# - checks:      typecheck, format, build
+# - integration: the runner tests against a local Supabase stack built from
+#                the web repo's migrations: its branch with the same name if
+#                there is one, else its main (needs REPOS_READ_TOKEN to check out
+#                proc-robot-web, SETUP_ACCOUNT.md §2; skipped without it)
+# - docker:      builds the production image and checks LibreOffice runs in it
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  SUPABASE_CLI_VERSION: "3.0.0"
+  SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID: ci-unused
+  SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET: ci-unused
+  SUPABASE_EXCLUDE: studio,edge-runtime,imgproxy,logflare,vector
+
+jobs:
+  checks:
+    name: Typecheck, format, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run build
+
+  integration:
+    name: Integration tests (local database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPOS_READ_TOKEN: ${{ secrets.REPOS_READ_TOKEN }}
+    steps:
+      - name: No web repo access
+        if: env.REPOS_READ_TOKEN == ''
+        run: echo "::notice::REPOS_READ_TOKEN is not set; skipping the integration tests (they need the web repo's migrations)."
+
+      - uses: actions/checkout@v5
+        if: env.REPOS_READ_TOKEN != ''
+        with:
+          path: proc-robot-worker
+      # A change that spans both repos uses the same branch name in each, so CI
+      # tests the pair; otherwise the web repo's main.
+      - name: Pick the web branch
+        id: web-ref
+        if: env.REPOS_READ_TOKEN != ''
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          REPO: ${{ github.repository_owner }}/proc-robot-web
+        run: |
+          url="https://x-access-token:${REPOS_READ_TOKEN}@github.com/${REPO}.git"
+          if git ls-remote --exit-code --heads "$url" "refs/heads/$BRANCH" > /dev/null; then
+            ref="$BRANCH"
+          else
+            ref=main
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "::notice::Web repo checked out from its '$ref' branch."
+      - name: Check out the web repo (database migrations)
+        if: env.REPOS_READ_TOKEN != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/proc-robot-web
+          token: ${{ env.REPOS_READ_TOKEN }}
+          ref: ${{ steps.web-ref.outputs.ref }}
+          path: proc-robot-web
+      - name: The web repo has the database
+        id: web
+        if: env.REPOS_READ_TOKEN != ''
+        env:
+          WEB_REF: ${{ steps.web-ref.outputs.ref }}
+        run: |
+          if [ -f proc-robot-web/supabase/config.toml ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The web repo's '$WEB_REF' branch has no supabase/ yet; skipping the integration tests."
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.web.outputs.ready == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: proc-robot-worker/package-lock.json
+      - uses: supabase/setup-cli@v3
+        if: steps.web.outputs.ready == 'true'
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+
+      - name: Start Supabase (the web repo's migrations and seed)
+        if: steps.web.outputs.ready == 'true'
+        run: supabase start -x "$SUPABASE_EXCLUDE"
+        working-directory: proc-robot-web
+      - name: Integration tests
+        if: steps.web.outputs.ready == 'true'
+        run: npm ci && npm test
+        working-directory: proc-robot-worker
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: proc-robot-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: LibreOffice and Node run in the image
+        run: |
+          docker run --rm --entrypoint soffice proc-robot-worker:ci --version
+          docker run --rm --entrypoint node proc-robot-worker:ci --version
