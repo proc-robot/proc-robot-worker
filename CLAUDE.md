@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **proc-robot-worker** is the background worker of **Proc-Robot**, an AI procurement & quotation
 platform. It runs the long work that never happens in a web request: document extraction, price
 discovery, price-list imports, template analysis, document rendering (DOCX/XLSX → PDF with
-LibreOffice) and, from P2, email. Node 22 + TypeScript, deployed as a Docker service on **Railway
+LibreOffice) and, from Phase 3, email. Node 22 + TypeScript, deployed as a Docker service on **Railway
 (US East)**.
 
 Sibling repos and docs (one level up, `../`):
@@ -119,14 +119,15 @@ All environment variables are validated in `src/config.ts`; `.env` is read only 
 ## Deploying (Railway, TASKS.md T0.6.7)
 
 Creating the Railway project and every value it needs is described step by step in
-`../SETUP_ACCOUNT.md` (§3 for the database role and connection string, §7 for Railway).
+`../SETUP_ACCOUNT.md` (§3 for the database role and connection string, §6 for Railway).
 
-- One service per environment (dev, staging, prod) in US East, built from this repo's `Dockerfile`.
+- One service in Railway's `production` environment (US East), deploying from `main`: there is only
+  one hosted environment, `prod`. Built from this repo's `Dockerfile`.
   Config as code in `railway.json`: health check on `/health`, restart on failure.
 - The image is Node 22 on Debian with LibreOffice headless (no GUI) and Liberation fonts (metric
   compatible with Arial, the default templates' fallback); `tini` is PID 1, so SIGTERM reaches Node
   and LibreOffice child processes are reaped.
-- Per environment, set the role's password once in the Supabase SQL editor
+- Set the role's password once in the prod project's Supabase SQL editor
   (`alter role procrobot_worker with password '…'`). Then put `DATABASE_URL` and
   `ALERT_WEBHOOK_URL` in Railway variables. Never commit them.
 - The full image (Node + LibreOffice) has not been built locally yet; the first Railway or CI build

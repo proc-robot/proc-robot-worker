@@ -2,7 +2,7 @@ import type { Logger } from "./log.js";
 
 /**
  * Something an operator must look at (a dead letter). Always logged with
- * `alert: true` (Better Stack alerts on it, T0.7.5); also posted to a
+ * `alert: true` (Better Stack alerts on it from Phase 4, T4.1.3); also posted to a
  * Slack-compatible webhook when ALERT_WEBHOOK_URL is set. Never throws.
  */
 export async function alert(

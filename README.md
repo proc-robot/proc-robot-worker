@@ -152,7 +152,8 @@ end-to-end worker check, so keep `npm install` done here.
 ## Deployment
 
 Railway builds the `Dockerfile`. `railway.json` sets the health check on `/health` and restarts the
-service on failure. There is one service per environment (dev, staging, production), all in US East.
+service on failure. There is one service, in Railway's `production` environment in US East (the only
+hosted environment; local development runs against the local Supabase stack).
 
 - **The image:**
   - Node 22 on Debian slim;
@@ -166,7 +167,7 @@ service on failure. There is one service per environment (dev, staging, producti
   down.
 - **Secrets:** `DATABASE_URL` and `ALERT_WEBHOOK_URL` are set in Railway's variables and never
   committed. The role's password, the pooler connection string and the Railway setup are covered
-  step by step in `SETUP_ACCOUNT.md` (§3 and §7).
+  step by step in `SETUP_ACCOUNT.md` (§3 and §6).
 
 ## CI
 
