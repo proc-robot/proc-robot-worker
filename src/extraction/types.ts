@@ -17,7 +17,7 @@ export type ParsedSheet = {
 };
 
 /** A part of a document small enough for one model call. */
-export type Chunk =
+export type Chunk = (
   | {
       kind: "sheet";
       fileName: string;
@@ -34,7 +34,14 @@ export type Chunk =
       firstPage: number;
       pageCount: number;
       totalPages: number;
-    };
+    }
+) & {
+  /**
+   * The headings the previous part of the same sheet or PDF ended under, so
+   * items before the first heading in this part keep their section.
+   */
+  previousSection?: string[];
+};
 
 /*
  * What the model returns, validated before anything is stored (CLAUDE.md
@@ -45,12 +52,32 @@ export type Chunk =
  */
 const score = z.number().describe("0 to 1: how sure you are this value is read correctly.");
 
+const where = {
+  row: z.number().int().nullable().describe("The spreadsheet row (R12 is row 12), or null."),
+  page: z.number().int().nullable().describe("The page within the excerpt, from 1, or null."),
+};
+
 export const extractedItemSchema = z.object({
-  name: z.string().describe("Short name of the product or work, e.g. 'IP dome camera'."),
+  section: z
+    .array(z.string())
+    .describe(
+      "The headings the item sits under, outermost first, as written, e.g. ['B. PERALATAN DAN INSTALASI CCTV', 'I. LANTAI-1 & Site']; empty when there are none.",
+    ),
+  name: z.string().describe("Short, clean name of the product or work, e.g. 'IP dome camera'."),
   description: z.string().describe("The full description as written, or an empty string."),
   specs: z
     .array(z.object({ key: z.string(), value: z.string() }))
     .describe("Structured specifications with snake_case English keys, values copied exactly."),
+  conflicts: z
+    .array(
+      z.object({
+        key: z.string().describe("The specification key, as in specs."),
+        values: z.array(z.object({ value: z.string(), ...where })),
+      }),
+    )
+    .describe(
+      "Specifications the item's own text gives different values for, each value with where it is written; empty when there are none.",
+    ),
   quantity: z
     .number()
     .nullable()
@@ -117,6 +144,8 @@ export type ValidationFlag = {
 /** An item as it is stored in `list_items`. */
 export type ListItem = {
   position: number;
+  /** The headings it sits under, joined with " › "; null when none. */
+  section: string | null;
   name: string;
   description: string | null;
   specs: Record<string, string>;

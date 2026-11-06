@@ -6,6 +6,7 @@ import { ClaudeExtractor, costUsd, needsSecondReading } from "../src/extraction/
 import { extractChunks, measureFile, splitFile } from "../src/extraction/extract.js";
 import { FakeExtractor } from "../src/extraction/fake.js";
 import { measurePdf, splitPdf } from "../src/extraction/pdf.js";
+import { chunkContent } from "../src/extraction/prompt.js";
 import { formatRow, parseSpreadsheet } from "../src/extraction/sheet.js";
 import type { Chunk, ExtractedItem, ExtractionOutput, Extractor } from "../src/extraction/types.js";
 import { buildUnitIndex, normalizeUnit } from "../src/extraction/units.js";
@@ -66,9 +67,11 @@ async function pdfWithPages(textPages: number, imagePages: number): Promise<Uint
 }
 
 const item = (overrides: Partial<ExtractedItem> = {}): ExtractedItem => ({
+  section: [],
   name: "IP dome camera",
   description: "IP dome camera 4MP",
   specs: [{ key: "Resolution", value: "4 MP" }],
+  conflicts: [],
   quantity: 24,
   unit: "unit",
   notes: "",
@@ -165,6 +168,7 @@ describe("units", () => {
 
 describe("validation", () => {
   const base = {
+    section: null,
     description: null,
     notes: null,
     source_ref: {},
@@ -257,6 +261,48 @@ describe("validation", () => {
       },
     ]);
     expect(missing!.validation_flags.map((flag) => flag.code)).toEqual(["missing_quantity"]);
+
+    // Nor is a conflict found while reading followed by a vague "check this item".
+    const conflict = {
+      code: "conflicting_specs" as const,
+      field: "specs",
+      message: "The document gives different values for storage: 4TB (row 4) and 8TB (row 12).",
+    };
+    const [nvr] = validateItems([
+      {
+        ...base,
+        position: 0,
+        name: "NVR",
+        specs: { storage: "4TB / 8TB" },
+        quantity: 1,
+        unit: "set",
+        unit_code: "pcs",
+        confidence: { overall: 0.6, fields: { name: 0.9, specs: 0.5, quantity: 0.9, unit: 0.9 } },
+        validation_flags: [conflict],
+      },
+    ]);
+    expect(nvr!.validation_flags).toEqual([conflict]);
+  });
+
+  it("treats the same product under another heading as a line of its own", () => {
+    const camera = {
+      ...base,
+      name: "Outdoor camera",
+      specs: { resolution: "1080P" },
+      quantity: 3,
+      unit: "unit",
+      unit_code: "pcs",
+    };
+    const items = validateItems([
+      { ...camera, position: 0, section: "B. Installation › I. Floor 1", quantity: 14 },
+      { ...camera, position: 1, section: "B. Installation › II. Floor 2" },
+      { ...camera, position: 2, section: "B. Installation › II. Floor 2" },
+    ]);
+    expect(items.map((entry) => entry.validation_flags.map((flag) => flag.code))).toEqual([
+      [],
+      [],
+      ["duplicate"],
+    ]);
   });
 });
 
@@ -352,6 +398,136 @@ describe("extracting parts", () => {
     ]);
     expect(result.usage).toEqual({ inputTokens: 2000, outputTokens: 400, costUsd: 0.0004 });
     expect(result.model).toBe("claude-haiku-5-5");
+  });
+
+  it("keeps each item's headings, carries them into the next part and reports conflicting values", async () => {
+    const part = (sheet: string, row: number): Chunk => ({
+      kind: "sheet",
+      fileName: "boq.xlsx",
+      sheet,
+      header: null,
+      rows: [{ row, cells: [{ col: "B", value: "…" }] }],
+    });
+    const outputs: ExtractionOutput[] = [
+      {
+        title: "CCTV",
+        skipped: [],
+        items: [
+          item({
+            name: "NVR 32 channel",
+            section: ["A. Main equipment"],
+            specs: [{ key: "storage", value: "4TB / 8TB" }],
+            conflicts: [
+              {
+                key: "Storage",
+                values: [
+                  { value: "4TB", row: 4, page: null },
+                  { value: "8TB", row: 12, page: null },
+                  { value: "4 TB", row: 13, page: null },
+                ],
+              },
+            ],
+          }),
+          item({ name: "Outdoor camera", section: ["B. Installation", "I. Floor 1"] }),
+        ],
+      },
+      {
+        title: "",
+        skipped: [],
+        items: [item({ name: "Outdoor camera", section: ["B. Installation", "II. Floor 2"] })],
+      },
+      { title: "", skipped: [], items: [item({ name: "Laptop" })] },
+    ];
+    const seen: Chunk[] = [];
+    const extractor: Extractor = {
+      name: "stub",
+      extract: async (chunk) => {
+        seen.push(chunk);
+        return {
+          output: outputs[seen.length - 1]!,
+          model: "claude-haiku-5-5",
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+        };
+      },
+    };
+    const result = await extractChunks({
+      chunks: [part("BOQ", 4), part("BOQ", 90), part("Other", 2)],
+      fileName: "boq.xlsx",
+      extractor,
+      units: UNITS,
+      signal: new AbortController().signal,
+    });
+
+    // The second part of the same sheet learns where the first one ended; another sheet doesn't.
+    expect(seen.map((chunk) => chunk.previousSection)).toEqual([
+      undefined,
+      ["B. Installation", "I. Floor 1"],
+      undefined,
+    ]);
+    expect(result.items.map((entry) => entry.section)).toEqual([
+      "A. Main equipment",
+      "B. Installation › I. Floor 1",
+      "B. Installation › II. Floor 2",
+      null,
+    ]);
+    expect(result.items[0]!.specs).toEqual({ storage: "4TB / 8TB" });
+    expect(result.items[0]!.validation_flags).toEqual([
+      {
+        code: "conflicting_specs",
+        field: "specs",
+        message:
+          "The document gives different values for storage: 4TB (row 4) and 8TB (row 12). Check which one is wanted.",
+      },
+    ]);
+    // The camera on floor 2 is not a duplicate of the one on floor 1.
+    expect(result.items[2]!.validation_flags).toEqual([]);
+  });
+
+  it("tells the model where the previous part left off", () => {
+    const text = (chunk: Chunk) =>
+      chunkContent(chunk)
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("");
+    const chunk: Chunk = {
+      kind: "sheet",
+      fileName: "boq.xlsx",
+      sheet: "BOQ",
+      header: null,
+      rows: [{ row: 90, cells: [{ col: "B", value: "Camera" }] }],
+    };
+    expect(text({ ...chunk, previousSection: ["B. Installation", "I. Floor 1"] })).toContain(
+      'The previous part ended under these headings: ["B. Installation","I. Floor 1"].',
+    );
+    expect(text(chunk)).not.toContain("previous part");
+  });
+
+  it("the test extractor recognizes numbered headings", async () => {
+    const book = workbook({
+      BOQ: [
+        ["No", "Uraian", "Vol", "Sat"],
+        ["A.", "Main equipment", null, null],
+        [1, "NVR 32 channel", 1, "unit"],
+        ["B.", "Installation", null, null],
+        ["I.", "Floor 1", null, null],
+        [1, "Outdoor camera", 14, "unit"],
+        ["II.", "Floor 2", null, null],
+        [1, "Outdoor camera", 3, "unit"],
+      ],
+    });
+    const result = await extractChunks({
+      chunks: await splitFile("xlsx", "boq.xlsx", book),
+      fileName: "boq.xlsx",
+      extractor: new FakeExtractor(),
+      units: UNITS,
+      signal: new AbortController().signal,
+    });
+    expect(
+      result.items.map((entry) => [entry.section, entry.name, entry.validation_flags.length]),
+    ).toEqual([
+      ["A. Main equipment", "NVR 32 channel", 0],
+      ["B. Installation › I. Floor 1", "Outdoor camera", 0],
+      ["B. Installation › II. Floor 2", "Outdoor camera", 0],
+    ]);
   });
 
   it("reads a spreadsheet by its column names without AI (the test extractor)", async () => {

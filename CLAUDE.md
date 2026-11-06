@@ -108,7 +108,11 @@ trigger turns into the credit estimate; `extract` splits it (10 PDF pages or 80 
 each part with `EXTRACTION_MODEL` and, when the answer is cut off, refused, invalid or mostly below 0.8
 confidence, again with `EXTRACTION_REVIEW_MODEL` (with the server-side refusal fallback). Model output
 is validated with Zod; specs come back as key/value pairs because structured outputs only allow
-closed objects. Limits: 300 pages, 5,000 rows, 30 MB.
+closed objects. Each item keeps the headings it sits under (`section`; a part that starts mid-section
+is told where the previous part ended), so duplicates are only checked within a section. The model
+also reports values an item's own text contradicts (4TB in the title, 8TB below), which become a
+`conflicting_specs` flag naming the rows or pages. Limits: 300 pages, 5,000 rows, 30 MB.
+`npm run try:extract` is how a prompt change is checked on real BOQs before it ships.
 
 The web repo's Playwright suite starts this worker from `../proc-robot-worker` for its end-to-end
 worker check, so keep `npm install` done here.

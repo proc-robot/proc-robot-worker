@@ -9,9 +9,10 @@ import type {
   ListIssue,
   ListItem,
   Usage,
+  ValidationFlag,
 } from "./types.js";
 import { normalizeUnit, type UnitIndex } from "./units.js";
-import { validateItems } from "./validate.js";
+import { validateItems, type UncheckedItem } from "./validate.js";
 
 /*
  * Document extraction end to end (TASKS.md T1.3.4–T1.3.9): measure a file
@@ -108,11 +109,74 @@ function sourceRef(item: ExtractedItem, chunk: Chunk): Record<string, string | n
   return ref;
 }
 
+/** Joins the headings an item sits under: "B. Installation › I. Floor 1". */
+export const SECTION_SEPARATOR = " › ";
+
+function sectionOf(headings: string[]): string | null {
+  const parts = headings
+    .map((heading) => text(heading, 150))
+    .filter((heading): heading is string => heading !== null);
+  return parts.length > 0 ? parts.join(SECTION_SEPARATOR).slice(0, 300) : null;
+}
+
+/** "row 12" or "page 3" in the whole document, or null. */
+function place(at: { row: number | null; page: number | null }, chunk: Chunk): string | null {
+  if (chunk.kind === "pdf") {
+    if (!at.page) return null;
+    return `page ${chunk.firstPage + Math.min(Math.max(at.page, 1), chunk.pageCount) - 1}`;
+  }
+  return at.row ? `row ${at.row}` : null;
+}
+
+/** "a", "a and b", "a, b and c". */
+const listOf = (parts: string[]) =>
+  parts.length < 2 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/**
+ * A specification the item's own text gives two values for (an NVR titled
+ * "Hard Disk 4TB" with "HDD 8TB" in its details) becomes a flag that says
+ * where each value is written, and the spec keeps every value (D5).
+ */
+function conflictFlags(
+  item: ExtractedItem,
+  chunk: Chunk,
+  specs: Record<string, string>,
+): ValidationFlag[] {
+  const flags: ValidationFlag[] = [];
+  for (const conflict of item.conflicts) {
+    const key = specKey(conflict.key);
+    const seen = new Set<string>();
+    const values = conflict.values.flatMap((entry) => {
+      const value = text(entry.value, 100);
+      const normalized = value?.toLowerCase().replace(/\s+/g, "");
+      if (!value || !normalized || seen.has(normalized)) return [];
+      seen.add(normalized);
+      return [{ value, at: place(entry, chunk) }];
+    });
+    if (!key || values.length < 2) continue;
+    specs[key] ??= values.map((entry) => entry.value).join(" / ");
+    const label = key.replace(/_/g, " ");
+    const described = values.map((entry) =>
+      entry.at ? `${entry.value} (${entry.at})` : entry.value,
+    );
+    flags.push({
+      code: "conflicting_specs",
+      field: "specs",
+      message:
+        `The document gives different values for ${label}: ${listOf(described)}. Check which one is wanted.`.slice(
+          0,
+          400,
+        ),
+    });
+  }
+  return flags;
+}
+
 function toItem(
   item: ExtractedItem,
   chunk: Chunk,
   units: UnitIndex,
-): Omit<ListItem, "position" | "validation_flags"> | null {
+): Omit<UncheckedItem, "position"> | null {
   const name = text(item.name, 500);
   if (!name) return null;
   const specs: Record<string, string> = {};
@@ -121,6 +185,7 @@ function toItem(
     const cleanValue = text(value, 500);
     if (cleanKey && cleanValue && !(cleanKey in specs)) specs[cleanKey] = cleanValue;
   }
+  const conflicts = conflictFlags(item, chunk, specs);
   const quantity =
     item.quantity !== null && Number.isFinite(item.quantity) && item.quantity >= 0
       ? Math.round(item.quantity * 10_000) / 10_000
@@ -136,6 +201,7 @@ function toItem(
     },
   };
   return {
+    section: sectionOf(item.section),
     name,
     description: text(item.description, 4000),
     specs,
@@ -145,6 +211,7 @@ function toItem(
     notes: text(item.notes, 2000),
     source_ref: sourceRef(item, chunk),
     confidence,
+    validation_flags: conflicts,
   };
 }
 
@@ -167,13 +234,21 @@ export async function extractChunks(params: {
   const { chunks, extractor, units, signal } = params;
   const usage: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
   const models = new Set<string>();
-  const unchecked: Omit<ListItem, "validation_flags">[] = [];
+  const unchecked: UncheckedItem[] = [];
   const issues: ListIssue[] = [];
   let title = "";
+  // The headings the last part ended under, per sheet (or for the PDF).
+  let carried: { part: string; section: string[] } | null = null;
 
   for (const [index, chunk] of chunks.entries()) {
     signal.throwIfAborted();
-    const result = await extractor.extract(chunk, signal);
+    const part = chunk.kind === "pdf" ? "pdf" : `sheet:${chunk.sheet}`;
+    const previousSection: string[] = carried?.part === part ? carried.section : [];
+    const result = await extractor.extract(
+      previousSection.length > 0 ? { ...chunk, previousSection } : chunk,
+      signal,
+    );
+    carried = { part, section: result.output.items.at(-1)?.section ?? previousSection };
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
     usage.costUsd += result.usage.costUsd;

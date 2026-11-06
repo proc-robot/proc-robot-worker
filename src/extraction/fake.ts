@@ -9,6 +9,7 @@ import type { Chunk, ChunkResult, ExtractedItem, Extractor, SheetRow } from "./t
  */
 
 const ROLES: Record<string, string[]> = {
+  number: ["no", "nomor", "number"],
   name: ["description", "desc", "uraian", "item", "items", "pekerjaan", "nama barang", "barang"],
   quantity: ["qty", "quantity", "quantities", "volume", "vol", "jumlah"],
   unit: ["unit", "uom", "satuan", "sat"],
@@ -46,11 +47,20 @@ export class FakeExtractor implements Extractor {
     }
     const roles = chunk.header ? columnRoles(chunk.header) : new Map<string, string>();
     const items: ExtractedItem[] = [];
+    let section = chunk.previousSection ?? [];
     for (const row of chunk.rows) {
       const value = (role: string) =>
         row.cells.find((cell) => roles.get(cell.col) === role)?.value ?? "";
       const name = value("name");
       if (!name) continue;
+      // A heading: numbered "A." (a section) or "II." (a part of one), with no quantity or unit.
+      const number = value("number").trim();
+      if (!value("quantity") && !value("unit") && /^[A-Z]{1,4}\.?$/.test(number)) {
+        const heading = `${number} ${name}`;
+        const part = /^[IVX]+\.?$/.test(number) && section.length > 0;
+        section = part ? [section[0]!, heading] : [heading];
+        continue;
+      }
       const quantityText = value("quantity").replace(/,/g, "");
       const quantity =
         quantityText && Number.isFinite(Number(quantityText)) ? Number(quantityText) : null;
@@ -58,9 +68,11 @@ export class FakeExtractor implements Extractor {
         .filter((role) => value(role))
         .map((role) => ({ key: role, value: value(role) }));
       items.push({
+        section,
         name,
         description: name,
         specs,
+        conflicts: [],
         quantity,
         unit: value("unit"),
         notes: value("notes"),

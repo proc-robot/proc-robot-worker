@@ -45,6 +45,7 @@ const units = buildUnitIndex([
     name: "Pieces",
     aliases: ["pc", "piece", "ea", "each", "nos", "no", "unit", "units", "buah", "bh"],
   },
+  { code: "point", name: "Point", aliases: ["points", "titik", "ttk"] },
   { code: "set", name: "Set", aliases: ["sets"] },
   { code: "lot", name: "Lot", aliases: ["lots"] },
   { code: "ls", name: "Lump sum", aliases: ["lump sum", "lumpsum", "l.s", "l/s"] },
@@ -68,11 +69,22 @@ const result = await extractChunks({
 });
 
 console.log(`\n${result.title} — ${result.items.length} items, model: ${result.model}`);
+let section: string | null = null;
 for (const item of result.items) {
-  const flags = item.validation_flags.map((flag) => flag.code).join(", ");
+  if (item.section !== section) {
+    section = item.section;
+    console.log(`\n  [${section ?? "no section"}]`);
+  }
+  const where = item.source_ref.last_row
+    ? `rows ${item.source_ref.row}–${item.source_ref.last_row}`
+    : item.source_ref.page
+      ? `page ${item.source_ref.page}`
+      : `row ${item.source_ref.row}`;
   console.log(
-    `${String(item.position + 1).padStart(3)}. ${item.name} | ${item.quantity ?? "?"} ${item.unit ?? ""} (${item.unit_code ?? "-"}) | ${JSON.stringify(item.specs)} | ${JSON.stringify(item.source_ref)} | conf ${item.confidence.overall}${flags ? ` | ⚑ ${flags}` : ""}`,
+    `${String(item.position + 1).padStart(3)}. ${item.name} | ${item.quantity ?? "?"} ${item.unit ?? ""} (${item.unit_code ?? "-"}) | ${where} | conf ${item.confidence.overall}`,
   );
+  console.log(`       ${JSON.stringify(item.specs)}`);
+  for (const flag of item.validation_flags) console.log(`       ⚑ ${flag.code}: ${flag.message}`);
 }
 for (const issue of result.issues)
   console.log(`  skipped: ${JSON.stringify(issue.source)} ${issue.message}`);
