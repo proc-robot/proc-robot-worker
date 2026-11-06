@@ -21,7 +21,11 @@ const key = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-type Unchecked = Omit<ListItem, "validation_flags">;
+/** An item before validation, with any flags its reading already raised (conflicts). */
+export type UncheckedItem = Omit<ListItem, "validation_flags"> & {
+  validation_flags?: ValidationFlag[];
+};
+type Unchecked = UncheckedItem;
 
 function compare(item: Unchecked, earlier: Unchecked): ValidationFlag | null {
   const number = earlier.position + 1;
@@ -48,7 +52,7 @@ function compare(item: Unchecked, earlier: Unchecked): ValidationFlag | null {
 
 export function validateItems(items: Unchecked[]): ListItem[] {
   const seen = new Map<string, Unchecked[]>();
-  return items.map((item) => {
+  return items.map(({ validation_flags: read = [], ...item }) => {
     const flags: ValidationFlag[] = [];
 
     if (item.quantity === null) {
@@ -64,7 +68,11 @@ export function validateItems(items: Unchecked[]): ListItem[] {
       });
     }
 
-    const name = key(item.name);
+    flags.push(...read);
+
+    // The same product under another heading (another floor, another building)
+    // is a separate line of the BOQ, not a duplicate.
+    const name = `${item.section ?? ""}\u0000${key(item.name)}`;
     for (const earlier of seen.get(name) ?? []) {
       const flag = compare(item, earlier);
       if (flag) {
@@ -74,7 +82,7 @@ export function validateItems(items: Unchecked[]): ListItem[] {
     }
     seen.set(name, [...(seen.get(name) ?? []), item]);
 
-    // A field already flagged as missing or unknown needs no second warning.
+    // A field already flagged (missing, unknown, conflicting) needs no second warning.
     const flagged = new Set(flags.map((flag) => flag.field));
     const uncertain = Object.entries(item.confidence.fields)
       .filter(
@@ -90,7 +98,8 @@ export function validateItems(items: Unchecked[]): ListItem[] {
           message: `Check the ${FIELD_LABELS[field]}: the reading is uncertain.`,
         });
       }
-    } else if (item.confidence.overall < CONFIDENCE_THRESHOLD) {
+    } else if (flags.length === 0 && item.confidence.overall < CONFIDENCE_THRESHOLD) {
+      // Only when nothing more specific already sends the reviewer to this item.
       flags.push({ code: "low_confidence", message: "Check this item: the reading is uncertain." });
     }
 

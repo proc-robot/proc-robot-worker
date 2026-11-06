@@ -167,6 +167,7 @@ afterAll(async () => {
 
 const BOQ = workbook([
   ["No", "Description", "Brand", "Qty", "Unit"],
+  ["A.", "Main equipment", null, null, null],
   [1, "IP dome camera 4MP", "Hikvision", 24, "unit"],
   [2, "NVR 32 channel", "Hikvision", 1, "set"],
   [3, "Cat6 cable", null, 305, "Mtr"],
@@ -178,7 +179,7 @@ describe("inspecting and extracting a document", () => {
     await run(inspectDocument(services()) as JobHandler<unknown>, job, id);
     expect(await document(id)).toMatchObject({
       status: "ready",
-      row_count: 3,
+      row_count: 4,
       estimated_credits: 1,
     });
 
@@ -202,12 +203,13 @@ describe("inspecting and extracting a document", () => {
       }),
     ]);
     const { rows: items } = await admin.query(
-      `select position, name, quantity::float as quantity, unit, unit_code, specs, source_ref
+      `select position, section, name, quantity::float as quantity, unit, unit_code, specs, source_ref
        from public.list_items where item_list_id = $1 order by position`,
       [lists[0]!.id],
     );
     expect(items).toEqual([
       expect.objectContaining({
+        section: "A. Main equipment",
         name: "IP dome camera 4MP",
         quantity: 24,
         unit: "unit",
@@ -225,8 +227,8 @@ describe("inspecting and extracting a document", () => {
     expect(items[0]!.source_ref).toEqual({
       file: "BOQ Tower.xlsx",
       sheet: "BOQ",
-      row: 2,
-      cells: "A2:E2",
+      row: 3,
+      cells: "A3:E3",
     });
 
     const { rows: settled } = await admin.query(

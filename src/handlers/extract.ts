@@ -115,14 +115,14 @@ export function extractDocument(services: Services) {
         const listId = rows[0]!.id;
         await client.query(
           `insert into public.list_items
-             (organization_id, item_list_id, position, name, description, specs, quantity, unit,
-              unit_code, notes, source_ref, confidence, validation_flags)
-           select $1, $2, x.position, x.name, x.description, x.specs, x.quantity, x.unit,
-                  x.unit_code, x.notes, x.source_ref, x.confidence, x.validation_flags
+             (organization_id, item_list_id, position, section, name, description, specs, quantity,
+              unit, unit_code, notes, source_ref, confidence, validation_flags)
+           select $1, $2, x.position, x.section, x.name, x.description, x.specs, x.quantity,
+                  x.unit, x.unit_code, x.notes, x.source_ref, x.confidence, x.validation_flags
            from jsonb_to_recordset($3::jsonb) as x(
-             position integer, name text, description text, specs jsonb, quantity numeric,
-             unit text, unit_code text, notes text, source_ref jsonb, confidence jsonb,
-             validation_flags jsonb)`,
+             position integer, section text, name text, description text, specs jsonb,
+             quantity numeric, unit text, unit_code text, notes text, source_ref jsonb,
+             confidence jsonb, validation_flags jsonb)`,
           [job.organizationId, listId, JSON.stringify(result.items)],
         );
         const updated = await client.query(
