@@ -37,7 +37,8 @@ export type RunnerStatus = {
 
 /**
  * The queue loop (TASKS.md T0.6.3). One long-polling loop per queue; at most
- * WORKER_CONCURRENCY jobs at once across all of them.
+ * WORKER_CONCURRENCY jobs at once across all of them, each queue reading a
+ * fair share of the free slots at a time.
  *
  * Per message: validate → mark running → run the handler while extending
  * the message's visibility (heartbeat) → archive on success. A failure is
@@ -114,6 +115,15 @@ export class Runner {
     return this.options.WORKER_CONCURRENCY - this.running.size - this.reserved;
   }
 
+  /**
+   * How many slots one queue's read may hold. Each read long-polls; if one
+   * queue reserved every free slot while it waited, the other queues could
+   * not read at all.
+   */
+  private readShare() {
+    return Math.max(1, Math.floor(this.options.WORKER_CONCURRENCY / this.handlers.length));
+  }
+
   private waitForSlot(): Promise<void> {
     return new Promise((resolve) => this.slotWaiters.push(resolve));
   }
@@ -127,7 +137,7 @@ export class Runner {
   private async poll(handler: JobHandler<unknown>): Promise<void> {
     const queue = new Queue(this.pool, handler.queue);
     while (!this.stopping) {
-      const free = this.freeSlots();
+      const free = Math.min(this.freeSlots(), this.readShare());
       if (free <= 0) {
         await this.waitForSlot();
         continue;
@@ -147,6 +157,8 @@ export class Runner {
         await sleep(5000, undefined, { signal: this.stopReading.signal }).catch(() => {});
       } finally {
         this.reserved -= free;
+        // The slots it held are free again for loops that were waiting.
+        this.wakeSlotWaiters();
       }
 
       for (const message of messages) {

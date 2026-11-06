@@ -24,6 +24,8 @@ const ADMIN_URL =
   process.env.TEST_ADMIN_DATABASE_URL ?? "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
 
 const QUEUE = "worker_test";
+/** A second queue, for a worker serving several queues at once. */
+const QUEUE_B = "worker_test_b";
 const OPTIONS: RunnerOptions = {
   WORKER_ID: "test-worker",
   WORKER_CONCURRENCY: 2,
@@ -76,6 +78,7 @@ beforeAll(async () => {
   admin = new pg.Pool({ connectionString: ADMIN_URL, max: 2 });
   worker = createPool(WORKER_URL, 6, silentLogger);
   await admin.query("select pgmq.create($1)", [QUEUE]);
+  await admin.query("select pgmq.create($1)", [QUEUE_B]);
   const suffix = Date.now().toString(36);
   const { rows } = await admin.query<{ id: string }>(
     `insert into public.organizations (name, slug, country, default_currency)
@@ -95,6 +98,7 @@ afterAll(async () => {
   await admin.query("delete from public.jobs_dead_letter where queue = $1", [QUEUE]);
   await admin.query("delete from public.organizations where id in ($1, $2)", [orgA, orgB]);
   await admin.query("select pgmq.drop_queue($1)", [QUEUE]);
+  await admin.query("select pgmq.drop_queue($1)", [QUEUE_B]);
   await worker.end();
   await admin.end();
 });
@@ -202,6 +206,20 @@ describe("the runner", () => {
       [id],
     );
     expect(rows[0]?.error).toBe("Error: Too many deliveries");
+  });
+});
+
+describe("several queues", () => {
+  it("serves every queue, even while another queue's loop is waiting for messages", async () => {
+    const pingB = { ...ping, queue: QUEUE_B } as JobHandler<unknown>;
+    const { rows } = await admin.query<{ id: string }>(
+      "select private.enqueue_job($1, $2, '{}'::jsonb) as id",
+      [orgA, QUEUE_B],
+    );
+    const id = rows[0]!.id;
+    // The first queue stays empty; its long poll must not keep the second waiting.
+    await runUntil([testPing, pingB], finished(id));
+    expect((await job(id)).status).toBe("succeeded");
   });
 });
 

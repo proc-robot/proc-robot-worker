@@ -32,6 +32,19 @@ const schema = z.object({
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   ALERT_WEBHOOK_URL: z.url().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  /** Supabase Storage, for the files jobs read and write (never the database). */
+  SUPABASE_URL: z.url().optional(),
+  SUPABASE_SECRET_KEY: z.string().min(20).optional(),
+  /** Claude, for document extraction (T1.3). */
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  EXTRACTION_MODEL: z.string().min(1).default("claude-haiku-5-5"),
+  /** Reads a part again when the first model is unsure or fails. */
+  EXTRACTION_REVIEW_MODEL: z.string().min(1).default("claude-opus-5-5"),
+  /** Tests and local development only: read spreadsheets by column name, without AI. */
+  EXTRACTION_FAKE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   SHUTDOWN_GRACE_SECONDS: number(25, 0, 300),
 });
 
