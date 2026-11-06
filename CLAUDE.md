@@ -45,7 +45,9 @@ the contract there first** (a new migration + test), then here.
 ## Rules
 
 1. **The worker connects as `procrobot_worker`**, never with the service-role / secret key. The role
-   has no RLS bypass.
+   has no RLS bypass. The secret key is used for **Supabase Storage only** (`src/storage.ts`), which
+   has no database role: handlers download only paths they read through `ctx.db`, and check the
+   path starts with the job's organization (`assertOrgPath`).
 2. **Every tenant query goes through `ctx.db(fn)`** (`withOrg` in `src/db.ts`): a transaction that
    sets `app.worker_org_id` to the job's organization, so the role's policies only show and change
    that organization's rows. Never use `pool.query` for tenant data, and never set
@@ -73,8 +75,11 @@ the contract there first** (a new migration + test), then here.
    text, prices or margins — they are confidential to the organization.
 10. **AI and web content is untrusted input** (prompt injection, PLAN.md → AI safety). Validate every
     model output with Zod before it touches the database.
-11. **Credits:** return `creditsConsumed` (and token usage / cost) in the handler's outcome; settling
-    the reservation is T1.10.3.
+11. **Credits:** the RPC reserved them before queueing. Return `creditsConsumed` (and token usage /
+    cost) in the outcome; when the job ends, a database trigger keeps what was used and refunds the
+    rest. A failed job refunds everything. Never touch the ledger from here.
+12. **Outside services** (Storage, Claude) reach handlers as `Services` (`src/services.ts`), built once
+    from the configuration and passed to the handler factories, so tests can swap them.
 
 ## Commands
 
@@ -87,12 +92,23 @@ npm start                # node dist/main.js
 npm run check            # typecheck + format:check + test
 npm test                 # integration tests against the local database (one file at a time)
 npm run format
+npm run try:extract -- <file>   # read a local BOQ with Claude and print the items (needs ANTHROPIC_API_KEY)
 ```
 
 The tests (`test/runner.test.ts`) run a real `Runner` as `procrobot_worker` on their own queue
 (`worker_test`, created and dropped by the test), so a dev worker on the `ping` queue cannot take
 their messages. They cover success, retry → dead letter, malformed messages, `JobFailedError`, crash
-loops (too many deliveries) and org scoping.
+loops (too many deliveries) and org scoping. `test/extraction-handlers.test.ts` calls the extraction
+handlers directly on job rows (no queue message) with an in-memory file store and the no-AI
+extractor; `test/extraction.test.ts` covers the parsers, validation and the Claude escalation with a
+stubbed client.
+
+**Extraction** (T1.3): `inspect_document` measures a file (pages and scans, or data rows), which a
+trigger turns into the credit estimate; `extract` splits it (10 PDF pages or 80 rows per part), reads
+each part with `EXTRACTION_MODEL` and, when the answer is cut off, refused, invalid or mostly below 0.8
+confidence, again with `EXTRACTION_REVIEW_MODEL` (with the server-side refusal fallback). Model output
+is validated with Zod; specs come back as key/value pairs because structured outputs only allow
+closed objects. Limits: 300 pages, 5,000 rows, 30 MB.
 
 The web repo's Playwright suite starts this worker from `../proc-robot-worker` for its end-to-end
 worker check, so keep `npm install` done here.
@@ -115,6 +131,11 @@ All environment variables are validated in `src/config.ts`; `.env` is read only 
 | `ALERT_WEBHOOK_URL` | — | Slack-compatible webhook for dead letters |
 | `LOG_LEVEL` | info | debug, info, warn, error |
 | `SHUTDOWN_GRACE_SECONDS` | 25 | Time for running jobs after SIGTERM |
+| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | — | Storage downloads (documents). Without them, jobs that read files fail at once |
+| `ANTHROPIC_API_KEY` | — | Claude, for extraction. Without it, extraction jobs fail at once (credits refunded) |
+| `EXTRACTION_MODEL` | `claude-haiku-5-5` | First reading of each part |
+| `EXTRACTION_REVIEW_MODEL` | `claude-opus-5-5` | Second reading when the first is cut off, refused, invalid or mostly uncertain |
+| `EXTRACTION_FAKE` | false | Tests and local development: read spreadsheets by column name, without AI. Never in production |
 
 ## Deploying (Railway, TASKS.md T0.6.7)
 
@@ -145,7 +166,9 @@ Creating the Railway project and every value it needs is described step by step 
 | `src/dead-letter.ts`, `src/alert.ts` | Giving up on a message; alerts |
 | `src/heartbeat.ts`, `src/health.ts` | `worker_heartbeats` row; `GET /health` |
 | `src/types.ts` | Handler API: `defineHandler`, `JobContext`, `JobOutcome`, `JobFailedError` |
-| `src/handlers/` | One file per queue; `ping` is the end-to-end check (T0.6.8) |
+| `src/handlers/` | One file per queue; `ping` is the end-to-end check (T0.6.8); `inspect-document` and `extract` (T1.3) |
+| `src/extraction/` | Spreadsheets (SheetJS) and PDFs (pdf-lib) → parts → Claude (`claude.ts`, structured output) → units, validation, items |
+| `src/services.ts`, `src/storage.ts` | Storage and Claude clients, built from the configuration |
 
 ## Git
 

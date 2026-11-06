@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { loadConfig } from "./config.js";
 import { createPool } from "./db.js";
-import { selectHandlers } from "./handlers/index.js";
+import { createHandlers, selectHandlers } from "./handlers/index.js";
 import { startHealthServer } from "./health.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { createLogger } from "./log.js";
 import { Runner } from "./runner.js";
+import { createServices } from "./services.js";
 
 // Local development reads worker/.env; Railway sets real environment variables.
 if (existsSync(".env")) process.loadEnvFile(".env");
@@ -18,7 +19,7 @@ const { version } = JSON.parse(
   version: string;
 };
 
-const handlers = selectHandlers(config.WORKER_QUEUES);
+const handlers = selectHandlers(createHandlers(createServices(config, log)), config.WORKER_QUEUES);
 // One connection per running job, one per polling loop, plus room for heartbeats.
 const pool = createPool(config.DATABASE_URL, config.WORKER_CONCURRENCY + handlers.length + 2, log);
 
